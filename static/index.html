@@ -1,0 +1,176 @@
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <link rel="icon" type="image/png" href="./static/favicon.png">
+    <title>Bella</title>
+    <style>
+        html,
+        * {
+            font-family: 'Inter';
+            box-sizing: border-box
+        }
+
+        body {
+            background-color: #222;
+            color: #fff;
+            line-height: 1.6;
+            background-image: url("./static/background.jpg");
+            background-size: cover;
+            background-repeat: no-repeat;
+            background-position: center;
+            padding: 0;
+        }
+
+        .lead {
+            font-size: 1.5rem;
+            font-weight: 300
+        }
+
+        .container {
+            margin: 150px auto;
+            max-width: 960px
+        }
+    </style>
+</head>
+
+<body>
+    <audio id="audioPlayer" controls style="display: none;"></audio>
+    <div class="container" style="margin-left: 20px;margin-top: 300px">
+        <div id="siri-classic"><canvas width="400" height="150" style="width: 400px; height: 150px;"></canvas></div>
+    </div>
+    <script src="./static/siriwave.umd.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script>
+        var classic = new SiriWave({ container: document.getElementById("siri-classic"), width: 400, height: 150, });
+        classic.setSpeed(0.15)
+        classic.stop()
+
+        const audio = document.getElementById("audioPlayer");
+        audio.addEventListener("ended", () => {
+            classic.stop();
+            // 在这里执行其他操作
+        });
+
+        // 获取用户的音频流
+        navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(function (stream) {
+                // 创建音频上下文
+                var audioContext = new AudioContext();
+                // 创建媒体流源节点
+                var sourceNode = audioContext.createMediaStreamSource(stream);
+                // 创建分析节点
+                var analyserNode = audioContext.createAnalyser();
+                sourceNode.connect(analyserNode);
+                // 设置分析节点的参数
+                analyserNode.fftSize = 2048; // 设置FFT大小
+                var bufferLength = analyserNode.frequencyBinCount;
+                var dataArray = new Uint8Array(bufferLength);
+                var audioChunks = []; // 存储录音数据的数组
+                var mediaRecorder = null; // 媒体录制器对象
+                var isRecording = false; // 是否正在录音的标志
+                var silenceTimer = null;
+                // 循环读取音频数据并进行处理
+                function update() {
+                    analyserNode.getByteFrequencyData(dataArray);
+                    // 计算音频的平均振幅
+                    var amplitude = 0;
+                    for (var i = 0; i < bufferLength; i++) {
+                        amplitude += dataArray[i];
+                    }
+                    amplitude /= bufferLength;
+                    // 如果当前音量大于某个值并且没有正在录音，则开始录音
+                    if (amplitude > 15 && !isRecording) {
+                        startRecording();
+                        // 重置计时器和静默时间
+                        clearInterval(silenceTimer);
+                        silenceTimer = null;
+                    }
+                    // 如果当前音量小于某个值并且正在录音，则启动计时器
+                    if (amplitude < 5 && isRecording) {
+                        if (!silenceTimer) {
+                            silenceTimer = setTimeout(stopRecording, 1000); // 1秒后停止录音
+                        }
+                    } else {
+                        // 重置计时器和静默时间
+                        clearInterval(silenceTimer);
+                        silenceTimer = null;
+                    }
+                    // 循环调用update函数以持续获取音频数据
+                    requestAnimationFrame(update);
+                }
+
+                // 开始录音
+                function startRecording() {
+                    classic.start();
+                    isRecording = true;
+                    audioChunks = []; // 清空录音数据数组
+                    // 创建媒体录制器对象
+                    mediaRecorder = new MediaRecorder(stream);
+                    // 监听媒体录制器的数据可用事件
+                    mediaRecorder.addEventListener("dataavailable", function (event) {
+                        audioChunks.push(event.data);
+                    });
+                    // 监听媒体录制器的停止事件
+                    mediaRecorder.addEventListener("stop", function () {
+                        isRecording = false;
+                        // 创建Blob对象并保存录音文件
+                        var audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                        var audioURL = URL.createObjectURL(audioBlob);
+                        // 输出录音文件的URL
+                        console.log(audioURL);
+
+                        // 创建FormData对象
+                        var formData = new FormData();
+                        formData.append('audio', audioBlob, 'audio.webm');
+
+                        // 发送POST请求到后端
+                        axios.post('/upload', formData, {
+                            headers: {
+                                'Content-Type': 'multipart/form-data'
+                            },
+                            responseType: 'arraybuffer'
+                        })
+                            .then(function (response) {
+                                // 创建一个 Blob 对象，并设置其类型为 audio/mp3
+                                const audioBlob = new Blob([response.data], { type: 'audio/mp3' });
+
+                                // 使用 URL.createObjectURL 创建一个 Blob URL
+                                const audioUrl = URL.createObjectURL(audioBlob);
+
+                                // 获取音频元素并设置其 src 属性为 Blob URL
+                                const audioPlayer = document.getElementById('audioPlayer');
+                                audioPlayer.src = audioUrl;
+
+                                // 播放音频
+                                audioPlayer.play();
+                                classic.start();
+                            })
+                            .catch(function (error) {
+                                console.error('上传失败', error);
+                            });
+                    });
+                    // 开始录制
+                    mediaRecorder.start();
+                }
+
+                // 停止录音
+                function stopRecording() {
+                    classic.stop();
+                    // 停止录制并触发停止事件
+                    mediaRecorder.stop();
+                }
+
+                // 开始循环读取音频数据
+                update();
+            })
+            .catch(function (err) {
+                console.log(err);
+            });
+
+    </script>
+</body>
+
+</html>
